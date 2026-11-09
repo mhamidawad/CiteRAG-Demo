@@ -40,9 +40,13 @@ STOP = set(
     "give explain".split()
 )
 
+REINDEX_MIN_INTERVAL_SECONDS = 60.0
+
 _jobs = {}
 _guard = threading.Lock()
 _generation = threading.Lock()
+_reindex_guard = threading.Lock()
+_last_reindex = 0.0
 
 
 def _terms(query):
@@ -111,7 +115,9 @@ def _demo_html():
         '<div class="panel" style="border-color:#6f8f4f">'
         "<strong>CiteRAG Lite demo</strong> — SQLite FTS5 keyword retrieval over the "
         "public project documentation. The full MiniLM/LanceDB semantic backend needs "
-        "more memory than the Northflank free plan provides (0.2 vCPU / 512 MB)."
+        "more memory than the Northflank free plan provides (0.2 vCPU / 512 MB). "
+        "The public demo is read-only: reindexing is disabled and only the "
+        "documentation shipped in the image is searchable."
         "</div>"
     )
     html = html.replace("<main>", "<main>" + banner, 1)
@@ -228,6 +234,7 @@ async def health(request):
             "generation": "not_configured",
             "model": None,
             "native_opencode": "not_configured",
+            "reindex": "enabled" if _reindex_enabled() else "disabled",
             "busy": _generation.locked(),
         }
     )
@@ -267,13 +274,40 @@ async def sources(request):
     )
 
 
+def _reindex_enabled():
+    """Public demos expose no write surface unless an operator opts in."""
+    return os.getenv("CITERAG_DEMO_ALLOW_REINDEX") == "1"
+
+
+def _reindex_allowed_now():
+    """Return ``(allowed, retry_after)`` honouring a per-process cooldown."""
+    global _last_reindex
+    with _reindex_guard:
+        wait = REINDEX_MIN_INTERVAL_SECONDS - (time.monotonic() - _last_reindex)
+        if wait > 0:
+            return False, int(wait) + 1
+        _last_reindex = time.monotonic()
+        return True, 0
+
+
 async def reindex(request):
+    if not _reindex_enabled():
+        return JSONResponse(
+            {"error": "Reindexing is disabled in the public demo."}, status_code=403
+        )
     try:
         data = await request.json()
     except Exception:
         return JSONResponse({"error": "Expected an empty JSON object"}, status_code=400)
     if data != {}:
         return JSONResponse({"error": "Sources are operator-configured"}, status_code=400)
+    allowed, retry_after = _reindex_allowed_now()
+    if not allowed:
+        return JSONResponse(
+            {"error": "Reindex requests are rate limited; try again later."},
+            status_code=429,
+            headers={"Retry-After": str(retry_after)},
+        )
     response = _start_job(run_reindex)
     if response is None:
         return JSONResponse({"error": "A request is already running"}, status_code=409)

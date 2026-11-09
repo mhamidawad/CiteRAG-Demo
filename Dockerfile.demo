@@ -12,10 +12,10 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     CITERAG_DEMO_PUBLIC=1 \
+    CITERAG_DEMO_ALLOW_REINDEX=0 \
     CITERAG_WEB_HOST=0.0.0.0 \
     CITERAG_WEB_PORT=18762 \
     HOME=/app \
-    XDG_CACHE_HOME=/app/.cache \
     PYTHONPATH=/app
 
 WORKDIR /app
@@ -27,8 +27,9 @@ COPY citerag /app/citerag
 COPY docs /app/docs
 
 # Build the standard-library FTS5 index; citerag.cli is stdlib-only.
+# The public demo stays read-only: CITERAG_DEMO_ALLOW_REINDEX=0 above keeps
+# /api/reindex disabled, so the image never needs a writable data volume.
 RUN python -m citerag.cli ingest \
-    && mkdir -p /app/.cache \
     && chown -R 65532:65532 /app
 
 USER 65532:65532
