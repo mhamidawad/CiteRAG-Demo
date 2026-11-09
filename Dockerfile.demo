@@ -1,52 +1,35 @@
 # syntax=docker/dockerfile:1.7
-# Public demo image for the Northflank free Sandbox plan.
+# Public CiteRAG Lite demo image for the Northflank free Sandbox plan.
 #
-# Unlike the production Dockerfile this uses a public Debian-based Python base
-# (no Docker Hardened Images registry login), installs the locked CPU wheel set,
-# pre-downloads the pinned MiniLM embedding model and pre-builds the demo index.
-# The runtime is therefore offline and does not need a model download on first
-# request. It serves public project documentation only and is not a production
-# deployment.
+# The free plan is limited to 0.2 vCPU / 512 MB, which cannot host the PyTorch +
+# MiniLM + LanceDB semantic stack. This image serves the same dashboard and REST
+# shape using CiteRAG's documented standard-library SQLite FTS5 fallback. It
+# indexes public project documentation at build time and runs as a nonroot user.
+# It is a public demo, not a production deployment.
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    HF_HUB_OFFLINE=1 \
-    CITERAG_OFFLINE=1 \
-    CITERAG_MODEL_CACHE_DIR=/app/data/models \
+    CITERAG_DEMO_PUBLIC=1 \
     CITERAG_WEB_HOST=0.0.0.0 \
     CITERAG_WEB_PORT=18762 \
-    CITERAG_DEMO_PUBLIC=1 \
     HOME=/app \
     XDG_CACHE_HOME=/app/.cache \
     PYTHONPATH=/app
 
 WORKDIR /app
 
-# libgomp is required by the pinned CPU Torch wheel on Debian slim.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libgomp1 \
-    && rm -rf /var/lib/apt/lists/*
-
-# CPU-only wheels and their official hashes are pinned in requirements.lock.txt.
-COPY requirements.lock.txt /app/requirements.lock.txt
-RUN python -m pip install --no-cache-dir \
-        --extra-index-url https://download.pytorch.org/whl/cpu \
-        -r /app/requirements.lock.txt
+# The demo only needs the web framework; versions match requirements.lock.txt.
+RUN python -m pip install --no-cache-dir "starlette==1.10.0" "uvicorn==0.54.0"
 
 COPY citerag /app/citerag
 COPY docs /app/docs
-COPY tasks /app/tasks
-COPY configs /app/configs
 
-# Download the exact reviewed model revision, then build the LanceDB + FTS5 index.
-# The model repository is public; the HF token is only needed for rate limits.
-RUN mkdir -p /app/data/models \
-    && HF_HUB_OFFLINE=0 python -c "from huggingface_hub import snapshot_download; snapshot_download('sentence-transformers/all-MiniLM-L6-v2', revision='1110a243fdf4706b3f48f1d95db1a4f5529b4d41', cache_dir='/app/data/models', allow_patterns=['*.json', '*.safetensors', '*.txt'])" \
-    && HF_HUB_OFFLINE=1 CITERAG_OFFLINE=1 python -m citerag.semantic ingest
-
-RUN mkdir -p /app/.cache && chown -R 65532:65532 /app
+# Build the standard-library FTS5 index; citerag.cli is stdlib-only.
+RUN python -m citerag.cli ingest \
+    && mkdir -p /app/.cache \
+    && chown -R 65532:65532 /app
 
 USER 65532:65532
 EXPOSE 18762
